@@ -66,6 +66,8 @@
 
 #ifdef HWPMC_HOOKS
 #include <sys/pmckern.h>
+#include <sys/syslog.h>
+#include "sched_pmc.h"
 #endif
 
 #ifdef HWT_HOOKS
@@ -96,6 +98,12 @@ struct td_sched {
 	u_int		ts_slptime;	/* Number of ticks we vol. slept */
 	u_int		ts_runtime;	/* Number of ticks we were running */
 	u_int		ts_ticks;	/* pctcpu window's running tick count */
+#ifdef HWPMC_HOOKS
+	uint64_t	ts_cachemiss;		/* LLC misses this window. */
+	uint64_t	ts_cachemiss_prev;	/* LLC misses at last PMC read. */
+	u_int		ts_cachemiss_ticks;	/* Ticks since last PMC read. */
+	int		ts_cachemiss_penalty;	/* Priority penalty [0..MAX]. */
+#endif
 #ifdef KTR
 	char		ts_name[TS_NAME_LEN];
 #endif
@@ -246,6 +254,51 @@ static int __read_mostly preempt_thresh = 0;
 static int __read_mostly static_boost = PRI_MIN_BATCH;
 static int __read_mostly sched_idlespins = 10000;
 static int __read_mostly sched_idlespinthresh = -1;
+
+#ifdef HWPMC_HOOKS
+/*
+ * Cache-miss-aware priority adjustment knobs.
+ * AC-3, AC-4: Sysctl knobs under kern.sched.ule with specified defaults.
+ * INV-3: When cachemiss_enabled == 0, no PMC reads occur.
+ */
+#define	SCHED_CACHEMISS_PENALTY_MAX	50
+
+static int __read_mostly cachemiss_enabled;
+static int __read_mostly cachemiss_weight = 1;
+static uint64_t __read_mostly cachemiss_threshold = 1000;
+static int __read_mostly cachemiss_interval = 4;
+
+/* Fix 2: Serialize concurrent sysctl writes to cachemiss_enabled. */
+static struct mtx cachemiss_mtx;
+MTX_SYSINIT(cachemiss_mtx, &cachemiss_mtx, "sched cachemiss", MTX_DEF);
+
+/*
+ * Fix 9: Helper to compute cache-miss penalty from accumulated misses.
+ * Consolidates the penalty calculation used in sched_interact_update()
+ * and sched_ule_clock().
+ *
+ * Fix 4: Clamp excess/threshold before casting to int to avoid
+ * implementation-defined behavior when the uint64_t result exceeds INT_MAX.
+ */
+static inline void
+sched_cachemiss_update_penalty(struct td_sched *ts)
+{
+
+	if (ts->ts_cachemiss > cachemiss_threshold) {
+		uint64_t excess;
+		int raw_penalty;
+
+		excess = ts->ts_cachemiss - cachemiss_threshold;
+		raw_penalty = (int)MIN(excess / cachemiss_threshold,
+		    (uint64_t)SCHED_CACHEMISS_PENALTY_MAX);
+		raw_penalty *= cachemiss_weight;
+		ts->ts_cachemiss_penalty = min(raw_penalty,
+		    SCHED_CACHEMISS_PENALTY_MAX);
+	} else {
+		ts->ts_cachemiss_penalty = 0;
+	}
+}
+#endif
 
 /*
  * tdq - per processor runqs and statistics.  A mutex synchronizes access to
@@ -1778,6 +1831,17 @@ sched_priority(struct thread *td)
 		    "Nice: %d => nice pri off: %u)",
 		    pri, PRI_MIN_BATCH, PRI_MAX_BATCH, PRI_MIN_BATCH,
 		    len, run, run_unshifted, cpu_pri_off, nice, nice_pri_off));
+#ifdef HWPMC_HOOKS
+		/*
+		 * AC-8, AC-9, AC-10, AC-16, AC-17, INV-1, INV-2:
+		 * Apply cache-miss penalty to non-interactive threads.
+		 * Interactive threads (score < sched_interact) are never
+		 * penalized (AC-17).  Clamp to PRI_MAX_BATCH (INV-1).
+		 */
+		if (cachemiss_enabled != 0)
+			pri = min(pri + ts->ts_cachemiss_penalty,
+			    PRI_MAX_BATCH);
+#endif
 	}
 	sched_user_prio(td, pri);
 
@@ -1812,6 +1876,13 @@ sched_interact_update(struct thread *td)
 			ts->ts_slptime = SCHED_SLP_RUN_MAX;
 			ts->ts_runtime = 1;
 		}
+#ifdef HWPMC_HOOKS
+		/* AC-11, INV-9: Aggressive reset of cache-miss history. */
+		if (cachemiss_enabled != 0) {
+			ts->ts_cachemiss = 0;
+			sched_cachemiss_update_penalty(ts);
+		}
+#endif
 		return;
 	}
 	/*
@@ -1822,10 +1893,24 @@ sched_interact_update(struct thread *td)
 	if (sum > (SCHED_SLP_RUN_MAX / 5) * 6) {
 		ts->ts_runtime /= 2;
 		ts->ts_slptime /= 2;
+#ifdef HWPMC_HOOKS
+		/* AC-11, INV-9: Halving path for cache-miss history. */
+		if (cachemiss_enabled != 0) {
+			ts->ts_cachemiss /= 2;
+			sched_cachemiss_update_penalty(ts);
+		}
+#endif
 		return;
 	}
 	ts->ts_runtime = (ts->ts_runtime / 5) * 4;
 	ts->ts_slptime = (ts->ts_slptime / 5) * 4;
+#ifdef HWPMC_HOOKS
+	/* AC-11, INV-9: 4/5 scaling path for cache-miss history. */
+	if (cachemiss_enabled != 0) {
+		ts->ts_cachemiss = (ts->ts_cachemiss / 5) * 4;
+		sched_cachemiss_update_penalty(ts);
+	}
+#endif
 }
 
 /*
@@ -2413,6 +2498,15 @@ sched_ule_sswitch(struct thread *td, int flags)
 #ifdef	HWPMC_HOOKS
 		if (PMC_PROC_IS_USING_PMCS(td->td_proc))
 			PMC_SWITCH_CONTEXT(td, PMC_FN_CSW_IN);
+		/*
+		 * AC-14, INV-6, E4: Reset the LLC-miss baseline to
+		 * the current CPU's counter value so that the next
+		 * delta does not include misses from other threads
+		 * or from the old CPU after migration.
+		 */
+		if (cachemiss_enabled != 0 && sched_pmc_is_active())
+			td_get_sched(td)->ts_cachemiss_prev =
+			    sched_pmc_read(cpuid);
 #endif
 	} else {
 		thread_unblock_switch(td, mtx);
@@ -2501,6 +2595,18 @@ sched_ule_wakeup(struct thread *td, int srqflags)
 	 * Reset the slice value since we slept and advanced the round-robin.
 	 */
 	ts->ts_slice = 0;
+#ifdef HWPMC_HOOKS
+	/*
+	 * AC-13: Reset PMC baseline on wakeup so the first read
+	 * after waking does not produce a spurious delta (the
+	 * counter may have advanced while this thread slept).
+	 * Preserve ts_cachemiss and ts_cachemiss_penalty so that
+	 * a thread that repeatedly sleeps briefly and wakes to
+	 * cause cache misses is still penalized.
+	 */
+	ts->ts_cachemiss_prev = 0;
+	ts->ts_cachemiss_ticks = 0;
+#endif
 	sched_add(td, SRQ_BORING | srqflags);
 }
 
@@ -2565,6 +2671,16 @@ sched_ule_fork_thread(struct thread *td, struct thread *child)
 	ts2->ts_runtime = ts->ts_runtime;
 	/* Attempt to quickly learn interactivity. */
 	ts2->ts_slice = tdq_slice(tdq) - sched_slice_min;
+#ifdef HWPMC_HOOKS
+	/*
+	 * AC-12: New threads start with no cache-miss history.
+	 * Do not inherit from the parent.
+	 */
+	ts2->ts_cachemiss = 0;
+	ts2->ts_cachemiss_prev = 0;
+	ts2->ts_cachemiss_ticks = 0;
+	ts2->ts_cachemiss_penalty = 0;
+#endif
 #ifdef KTR
 	bzero(ts2->ts_name, sizeof(ts2->ts_name));
 #endif
@@ -2737,6 +2853,49 @@ sched_ule_clock(struct thread *td, int cnt)
 		 */
 		td_get_sched(td)->ts_runtime += tickincr * cnt;
 		sched_interact_update(td);
+#ifdef HWPMC_HOOKS
+		/*
+		 * AC-8, INV-3, INV-5, INV-8:
+		 * Read LLC-miss PMC counter every cachemiss_interval ticks.
+		 * Compute delta and update accumulated miss count and penalty.
+		 */
+		if (cachemiss_enabled != 0 && sched_pmc_is_active()) {
+			uint64_t raw, delta;
+
+			ts->ts_cachemiss_ticks += cnt;
+			if (ts->ts_cachemiss_ticks >=
+			    (u_int)cachemiss_interval) {
+				ts->ts_cachemiss_ticks = 0;
+
+				/* Step 5: Read the current counter. */
+				raw = sched_pmc_read(TDQ_ID(tdq));
+
+				/*
+				 * Step 6: Compute delta.
+				 * E3: Unsigned subtraction handles
+				 * counter wraparound correctly.
+				 */
+				if (ts->ts_cachemiss_prev == 0)
+					delta = 0;
+				else
+					delta = raw - ts->ts_cachemiss_prev;
+
+				/* Step 7: Store current value. */
+				ts->ts_cachemiss_prev = raw;
+
+				/* Step 8: Accumulate. */
+				ts->ts_cachemiss += delta;
+
+				/*
+				 * Step 9: Compute penalty.
+				 * AC-9, AC-18, AC-19, INV-2: Penalty
+				 * is clamped to
+				 * SCHED_CACHEMISS_PENALTY_MAX.
+				 */
+				sched_cachemiss_update_penalty(ts);
+			}
+		}
+#endif
 		sched_priority(td);
 	}
 
@@ -3510,3 +3669,150 @@ SYSCTL_INT(_kern_sched_ule, OID_AUTO, always_steal, CTLFLAG_RWTUN,
     &always_steal, 0,
     "Always run the stealer from the idle thread");
 #endif
+
+#ifdef HWPMC_HOOKS
+/*
+ * Sysctl handler for cachemiss_enabled.
+ * AC-3, AC-7, AC-20, AC-21, E7: Toggling enabled allocates/releases PMCs.
+ */
+static int
+sysctl_cachemiss_enabled(SYSCTL_HANDLER_ARGS)
+{
+	int error, new_val, old_val;
+
+	old_val = cachemiss_enabled;
+	new_val = old_val;
+	error = sysctl_handle_int(oidp, &new_val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+
+	new_val = (new_val != 0) ? 1 : 0;
+
+	/* Fix 2: Serialize concurrent sysctl writes. */
+	mtx_lock(&cachemiss_mtx);
+
+	if (new_val == cachemiss_enabled) {
+		mtx_unlock(&cachemiss_mtx);
+		return (0);
+	}
+
+	if (new_val) {
+#ifdef SMP
+		/*
+		 * Fix 3: CTLFLAG_RWTUN causes this handler to run
+		 * during SI_SUB_KMEM before APs are started.  Defer
+		 * PMC init until SMP is running.
+		 */
+		if (!smp_started) {
+			log(LOG_WARNING,
+			    "sched_ule: cachemiss PMC init deferred; "
+			    "SMP not yet started\n");
+			cachemiss_enabled = 0;
+			mtx_unlock(&cachemiss_mtx);
+			return (0);
+		}
+#endif
+		/* AC-20, AC-21: Transition 0 -> 1: allocate PMCs. */
+		error = sched_pmc_init();
+		if (error != 0) {
+			/*
+			 * AC-15, AC-21: PMC allocation failed.
+			 * Log a warning but do not return an error to the
+			 * sysctl caller -- the sysctl write succeeds per E1.
+			 *
+			 * Fix 8: Keep feature disabled when init fails.
+			 */
+			log(LOG_WARNING,
+			    "sched_ule: cachemiss PMC init failed (%d); "
+			    "cache-miss penalty will not be applied\n", error);
+			new_val = 0;
+		}
+	} else {
+		/* AC-20: Transition 1 -> 0: release PMCs. */
+		sched_pmc_fini();
+	}
+	cachemiss_enabled = new_val;
+	mtx_unlock(&cachemiss_mtx);
+	return (0);
+}
+
+/*
+ * Sysctl handler for cachemiss_weight with clamping to [0, 10].
+ * AC-5: Values outside range are clamped silently.
+ */
+static int
+sysctl_cachemiss_weight(SYSCTL_HANDLER_ARGS)
+{
+	int error, new_val;
+
+	new_val = cachemiss_weight;
+	error = sysctl_handle_int(oidp, &new_val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (new_val < 0)
+		new_val = 0;
+	if (new_val > 10)
+		new_val = 10;
+	cachemiss_weight = new_val;
+	return (0);
+}
+
+/*
+ * Sysctl handler for cachemiss_interval with clamping to [1, 100].
+ * AC-6: Values outside range are clamped silently.
+ */
+static int
+sysctl_cachemiss_interval(SYSCTL_HANDLER_ARGS)
+{
+	int error, new_val;
+
+	new_val = cachemiss_interval;
+	error = sysctl_handle_int(oidp, &new_val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (new_val < 1)
+		new_val = 1;
+	if (new_val > 100)
+		new_val = 100;
+	cachemiss_interval = new_val;
+	return (0);
+}
+
+/*
+ * Fix 1: Sysctl handler for cachemiss_threshold with minimum clamp to 1.
+ * Prevents division by zero when computing excess / cachemiss_threshold
+ * in scheduler tick context.
+ */
+static int
+sysctl_cachemiss_threshold(SYSCTL_HANDLER_ARGS)
+{
+	uint64_t new_val;
+	int error;
+
+	new_val = cachemiss_threshold;
+	error = sysctl_handle_64(oidp, &new_val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (new_val < 1)
+		new_val = 1;
+	cachemiss_threshold = new_val;
+	return (0);
+}
+
+SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_enabled,
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
+    sysctl_cachemiss_enabled, "I",
+    "Enable cache-miss-aware priority adjustment (0=disabled, 1=enabled)");
+SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_weight,
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
+    sysctl_cachemiss_weight, "I",
+    "Cache-miss penalty multiplier (0-10, clamped)");
+SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_threshold,
+    CTLTYPE_U64 | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
+    sysctl_cachemiss_threshold, "QU",
+    "Cache-miss count threshold below which no penalty is applied");
+SYSCTL_PROC(_kern_sched_ule, OID_AUTO, cachemiss_interval,
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, NULL, 0,
+    sysctl_cachemiss_interval, "I",
+    "Number of sched_clock ticks between PMC reads (1-100, clamped)");
+#endif /* HWPMC_HOOKS */
