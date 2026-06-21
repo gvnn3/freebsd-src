@@ -57,9 +57,9 @@
 /*
  * Constants from the spec.
  */
+#include <sys/priority.h>
 #define	SCHED_CACHEMISS_PENALTY_MAX	50
-#define	PRI_MAX_BATCH			223	/* PRI_MAX_TIMESHARE */
-#define	PRI_MIN_TIMESHARE		56
+#define	PRI_MAX_BATCH			PRI_MAX_TIMESHARE
 
 /*
  * Sysctl paths as specified.
