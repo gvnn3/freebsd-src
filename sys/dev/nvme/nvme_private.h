@@ -232,6 +232,7 @@ struct nvme_controller {
 #define	QUIRK_APPLE_SHARED_CID_SPACE		0x20	/* Admin/IO share a single CID table */
 #define	QUIRK_APPLE_NO_ASYNC_EVENT		0x40	/* Skip NVMe async event requests */
 #define	QUIRK_APPLE_SINGLE_VECTOR		0x80	/* Single MSI vector, one IO queue */
+#define	QUIRK_EMPTY_NAMESPACE_CHANGED_LOG	0x100	/* Change Namespace List Log is always empty */
 
 	int			resource_id;
 	struct resource		*resource;
@@ -590,5 +591,11 @@ void	nvme_ctrlr_poll(struct nvme_controller *ctrlr);
 
 int	nvme_ctrlr_suspend(struct nvme_controller *ctrlr);
 int	nvme_ctrlr_resume(struct nvme_controller *ctrlr);
+
+static inline bool
+nvme_is_storage_device_default(device_t dev)
+{
+	return (true);
+}
 
 #endif /* __NVME_PRIVATE_H__ */

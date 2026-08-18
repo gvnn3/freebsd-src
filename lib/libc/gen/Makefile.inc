@@ -63,6 +63,7 @@ SRCS+= \
 	fts.c \
 	fts-compat.c \
 	fts-compat11.c \
+	fts-compat15.c \
 	ftw.c \
 	ftw-compat11.c \
 	getbootfile.c \
@@ -388,6 +389,7 @@ MLINKS+=frexp.3 frexpf.3 \
 MLINKS+=fts.3 fts_children.3 \
 	fts.3 fts_close.3 \
 	fts.3 fts_open.3 \
+	fts.3 fts_openat.3 \
 	fts.3 fts_read.3 \
 	fts.3 fts_set.3 \
 	fts.3 fts_set_clientptr.3 \

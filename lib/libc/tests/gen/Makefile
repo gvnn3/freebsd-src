@@ -1,5 +1,7 @@
 .include <bsd.own.mk>
 
+SUBDIR+=		libdummy
+
 ATF_TESTS_C+=		arc4random_test
 ATF_TESTS_C+=		dir2_test
 ATF_TESTS_C+=		dlopen_empty_test
@@ -14,6 +16,7 @@ ATF_TESTS_C+=		fts_blocks_test
 ATF_TESTS_C+=		fts_children_test
 ATF_TESTS_C+=		fts_misc_test
 ATF_TESTS_C+=		fts_open_test
+ATF_TESTS_C+=		fts_openat_test
 ATF_TESTS_C+=		fts_options_test
 ATF_TESTS_C+=		fts_regress_test
 ATF_TESTS_C+=		fts_set_test

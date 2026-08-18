@@ -53,11 +53,12 @@ SRCS+=	metadata.c
 # LOADER_NFS_SUPPORT	Add NFS support
 # LOADER_TFTP_SUPPORT	Add TFTP support
 # LOADER_UFS_SUPPORT	Add support for UFS filesystems
+# LOADER_XZ_SUPPORT	Add support for xz compressed files
 # LOADER_ZFS_SUPPORT	Add support for ZFS filesystems
 #
 
 .if ${LOADER_DISK_SUPPORT:Uyes} == "yes"
-CFLAGS.part.c+= -DHAVE_MEMCPY -I${SRCTOP}/sys/contrib/zlib
+CFLAGS.part.c+= ${ZLIB_CFLAGS}
 SRCS+=	disk.c part.c vdisk.c
 .endif
 
@@ -129,6 +130,9 @@ CFLAGS+=	-DLOADER_GZIP_SUPPORT
 .endif
 .if ${LOADER_BZIP2_SUPPORT:Uno} == "yes"
 CFLAGS+=	-DLOADER_BZIP2_SUPPORT
+.endif
+.if ${LOADER_XZ_SUPPORT:Uno} == "yes"
+CFLAGS+=	-DLOADER_XZ_SUPPORT
 .endif
 
 # Network related things

@@ -12,6 +12,7 @@ MAN=	accept_filter.9 \
 	altq.9 \
 	atomic.9 \
 	backlight.9 \
+	bcopy.9 \
 	bhnd.9 \
 	bhnd_erom.9 \
 	bios.9 \
@@ -228,7 +229,9 @@ MAN=	accept_filter.9 \
 	mbuf_tags.9 \
 	mdchain.9 \
 	memcchr.9 \
+	memcpy.9 \
 	memguard.9 \
+	memmove.9 \
 	microseq.9 \
 	microtime.9 \
 	microuptime.9 \
@@ -317,6 +320,7 @@ MAN=	accept_filter.9 \
 	rtentry.9 \
 	runqueue.9 \
 	rwlock.9 \
+	sbintime.9 \
 	sbuf.9 \
 	scheduler.9 \
 	SDT.9 \
@@ -1157,6 +1161,7 @@ MLINKS+=fetch.9 fubyte.9 \
 	fetch.9 fuword16.9 \
 	fetch.9 fuword32.9 \
 	fetch.9 fuword64.9 \
+	fetch.9 fueptr.9 \
 	fetch.9 fueword.9 \
 	fetch.9 fueword32.9 \
 	fetch.9 fueword64.9
@@ -1350,8 +1355,11 @@ MLINKS+=iflibdi.9 iflib_add_int_delay_sysctl.9 \
 	iflibdi.9 iflib_led_create.9 \
 	iflibdi.9 iflib_irq_alloc.9 \
 	iflibdi.9 iflib_irq_alloc_generic.9 \
+	iflibdi.9 iflib_init_failed.9 \
 	iflibdi.9 iflib_link_intr_deferred.9 \
 	iflibdi.9 iflib_link_state_change.9 \
+	iflibdi.9 iflib_request_reset.9 \
+	iflibdi.9 iflib_request_reset_if_up.9 \
 	iflibdi.9 iflib_rx_intr_deferred.9 \
 	iflibdi.9 iflib_tx_intr_deferred.9
 MLINKS+=iflibtxrx.9 isc_rxd_available.9 \
@@ -1612,6 +1620,8 @@ MLINKS+=mdchain.9 md_append_record.9 \
 	mdchain.9 md_get_uio.9 \
 	mdchain.9 md_initm.9 \
 	mdchain.9 md_next_record.9
+MLINKS+=memcpy.9 memcpy_data.9
+MLINKS+=memmove.9 memmove_data.9
 MLINKS+=microtime.9 bintime.9 \
 	microtime.9 getbintime.9 \
 	microtime.9 getmicrotime.9 \
@@ -1982,6 +1992,19 @@ MLINKS+=rwlock.9 rw_assert.9 \
 	rwlock.9 rw_wlock.9 \
 	rwlock.9 rw_wowned.9 \
 	rwlock.9 rw_wunlock.9
+MLINKS+=sbintime.9 bttosbt.9 \
+	sbintime.9 mstosbt.9 \
+	sbintime.9 nstosbt.9 \
+	sbintime.9 sbintime_getsec.9 \
+	sbintime.9 sbttobt.9 \
+	sbintime.9 sbttoms.9 \
+	sbintime.9 sbttons.9 \
+	sbintime.9 sbttots.9 \
+	sbintime.9 sbttotv.9 \
+	sbintime.9 sbttous.9 \
+	sbintime.9 tstosbt.9 \
+	sbintime.9 tvtosbt.9 \
+	sbintime.9 ustosbt.9
 MLINKS+=sbuf.9 sbuf_bcat.9 \
 	sbuf.9 sbuf_bcopyin.9 \
 	sbuf.9 sbuf_bcpy.9 \
@@ -2187,6 +2210,7 @@ MLINKS+=stack.9 stack_copy.9 \
 	stack.9 stack_sbuf_print_ddb.9 \
 	stack.9 stack_zero.9
 MLINKS+=store.9 subyte.9 \
+	store.9 suptr.9 \
 	store.9 suword.9 \
 	store.9 suword16.9 \
 	store.9 suword32.9 \
